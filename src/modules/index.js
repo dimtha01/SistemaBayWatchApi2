@@ -6,6 +6,7 @@ import registerReservacionRoutes from "./reservacion/index.js"
 // import registerFallasRoutes from "./fallas/index.js"
 // import registerGerencialRoutes from "./gerencial/index.js"
 import registerMarketingRoutes from "./marketing/index.js"
+import authRoutes from "./auth/index.js"
 
 export default function registerModules(app) {
   registerAdministracionRoutes(app)
@@ -16,4 +17,5 @@ export default function registerModules(app) {
   // registerFallasRoutes(app)
   // registerGerencialRoutes(app)
   registerMarketingRoutes(app)
+  authRoutes(app);
 }
