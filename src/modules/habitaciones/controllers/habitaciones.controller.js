@@ -280,7 +280,48 @@ export const getAllHabitacionComodidades = async (req, res) => {
   try {
     const baseUrl = `${req.protocol}://${req.get('host')}`;
 
-    // Consulta actualizada - solo necesitamos el nombre de la vista
+    // EXTRAER PARÁMETROS DE FILTRO DE LA URL
+    const {
+      capacidad,
+      tipo_cama,
+      vista,
+      precio_min,
+      precio_max,
+      comodidades // Puede ser string separado por comas: "Wi-Fi,TV,Aire Acondicionado"
+    } = req.query;
+
+    // CONSTRUIR CONDICIONES WHERE DINÁMICAMENTE
+    let whereConditions = [];
+    let queryParams = [];
+
+    // Filtro por capacidad
+    if (capacidad) {
+      whereConditions.push('th.capacidad_maxima >= ?');
+      queryParams.push(parseInt(capacidad));
+    }
+
+    // Filtro por vista
+    if (vista) {
+      whereConditions.push('vh.nombre_vista = ?');
+      queryParams.push(vista);
+    }
+
+    // Filtro por rango de precio
+    if (precio_min) {
+      whereConditions.push('th.precio_base_noche >= ?');
+      queryParams.push(parseFloat(precio_min));
+    }
+    if (precio_max) {
+      whereConditions.push('th.precio_base_noche <= ?');
+      queryParams.push(parseFloat(precio_max));
+    }
+
+    // Construir la cláusula WHERE
+    const whereClause = whereConditions.length > 0
+      ? `WHERE ${whereConditions.join(' AND ')}`
+      : '';
+
+    // CONSULTA PRINCIPAL MODIFICADA CON FILTROS
     const habitacionesQuery = `
       SELECT 
         h.habitacion_id,
@@ -302,13 +343,36 @@ export const getAllHabitacionComodidades = async (req, res) => {
       LEFT JOIN tipos_habitacion th ON h.tipo_habitacion_id = th.tipo_habitacion_id
       LEFT JOIN vistas_habitacion vh ON h.vista_id = vh.vista_id
       LEFT JOIN imagenes_habitacion img ON h.habitacion_id = img.habitacion_id
+      ${whereClause}
       ORDER BY h.piso, h.numero_habitacion, img.orden_visualizacion
     `;
 
-    const [habitacionesRows] = await pool.execute(habitacionesQuery);
+    const [habitacionesRows] = await pool.execute(habitacionesQuery, queryParams);
 
-    // Segunda consulta para comodidades (sin cambios)
-    const comodidadesQuery = `
+    // Si no hay habitaciones que cumplan los filtros, retornar vacío
+    if (habitacionesRows.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: 'No se encontraron habitaciones que cumplan con los filtros especificados',
+        data: [],
+        total: 0,
+        filtros_aplicados: {
+          capacidad,
+          tipo_cama,
+          vista,
+          precio_min,
+          precio_max,
+          comodidades
+        }
+      });
+    }
+
+    // Obtener IDs de habitaciones filtradas para las siguientes consultas
+    const habitacionIds = [...new Set(habitacionesRows.map(row => row.habitacion_id))];
+    const habitacionIdsPlaceholder = habitacionIds.map(() => '?').join(',');
+
+    // CONSULTA DE COMODIDADES (filtrada por habitaciones)
+    let comodidadesQuery = `
       SELECT 
         hc.habitacion_id,
         ch.comodidad_id,
@@ -326,11 +390,51 @@ export const getAllHabitacionComodidades = async (req, res) => {
       FROM habitacion_comodidad hc
       INNER JOIN comodidades_habitacion ch ON hc.comodidad_id = ch.comodidad_id
       LEFT JOIN iconos_comodidades ic ON ch.id_icon = ic.id_icon
-      WHERE ch.estado = 'Activo'
-      ORDER BY hc.habitacion_id, ch.categoria_comodidad, ch.nombre_comodidad
+      WHERE ch.estado = 'Activo' AND hc.habitacion_id IN (${habitacionIdsPlaceholder})
     `;
 
-    const [comodidadesRows] = await pool.execute(comodidadesQuery);
+    // Filtro por comodidades específicas
+    let comodidadesParams = [...habitacionIds];
+    if (comodidades) {
+      const comodidadesList = comodidades.split(',').map(c => c.trim());
+      const comodidadesPlaceholder = comodidadesList.map(() => '?').join(',');
+      comodidadesQuery += ` AND ch.nombre_comodidad IN (${comodidadesPlaceholder})`;
+      comodidadesParams.push(...comodidadesList);
+    }
+
+    comodidadesQuery += ` ORDER BY hc.habitacion_id, ch.categoria_comodidad, ch.nombre_comodidad`;
+
+    const [comodidadesRows] = await pool.execute(comodidadesQuery, comodidadesParams);
+
+    // CONSULTA DE CAMAS (filtrada por tipo de habitación)
+    const tipoHabitacionIds = [...new Set(habitacionesRows.map(row => row.tipo_habitacion_id))];
+    let camasQuery = `
+      SELECT 
+        thc.tipo_habitacion_id,
+        tc.tipo_cama_id,
+        tc.nombre_tipo_cama,
+        tc.descripcion as descripcion_cama,
+        tc.capacidad_personas,
+        tc.dimensiones,
+        tc.estado as estado_cama,
+        thc.cantidad,
+        thc.es_principal
+      FROM tipo_habitacion_camas thc
+      INNER JOIN tipos_cama tc ON thc.tipo_cama_id = tc.tipo_cama_id
+      WHERE tc.estado = 'Activo' AND thc.tipo_habitacion_id IN (${tipoHabitacionIds.map(() => '?').join(',')})
+    `;
+
+    let camasParams = [...tipoHabitacionIds];
+
+    // Filtro por tipo de cama
+    if (tipo_cama) {
+      camasQuery += ` AND tc.nombre_tipo_cama = ?`;
+      camasParams.push(tipo_cama);
+    }
+
+    camasQuery += ` ORDER BY thc.tipo_habitacion_id, thc.es_principal DESC, tc.nombre_tipo_cama`;
+
+    const [camasRows] = await pool.execute(camasQuery, camasParams);
 
     // Crear mapa de comodidades
     const comodidadesPorHabitacion = {};
@@ -356,23 +460,54 @@ export const getAllHabitacionComodidades = async (req, res) => {
       });
     });
 
+    // Crear mapa de camas por tipo de habitación
+    const camasPorTipoHabitacion = {};
+    camasRows.forEach(cama => {
+      if (!camasPorTipoHabitacion[cama.tipo_habitacion_id]) {
+        camasPorTipoHabitacion[cama.tipo_habitacion_id] = [];
+      }
+      camasPorTipoHabitacion[cama.tipo_habitacion_id].push({
+        tipo_cama_id: cama.tipo_cama_id,
+        nombre_tipo_cama: cama.nombre_tipo_cama,
+        descripcion: cama.descripcion_cama,
+        capacidad_personas: cama.capacidad_personas,
+        dimensiones: cama.dimensiones,
+        estado: cama.estado_cama,
+        cantidad: cama.cantidad,
+        es_principal: cama.es_principal,
+        capacidad_total: cama.capacidad_personas * cama.cantidad
+      });
+    });
+
     // Agrupar habitaciones
     const habitacionesMap = {};
 
     habitacionesRows.forEach(row => {
       if (!habitacionesMap[row.habitacion_id]) {
+        const camasDelTipo = camasPorTipoHabitacion[row.tipo_habitacion_id] || [];
+        const capacidadTotalCamas = camasDelTipo.reduce((total, cama) => {
+          return total + cama.capacidad_total;
+        }, 0);
+        const camaPrincipal = camasDelTipo.find(cama => cama.es_principal === 1) || camasDelTipo[0] || null;
+
         habitacionesMap[row.habitacion_id] = {
           habitacion_id: row.habitacion_id,
           numero_habitacion: row.numero_habitacion,
           estado: row.estado,
           piso: row.piso,
-          vista: row.vista, // Solo el nombre de la vista
+          vista: row.vista,
           tipo_habitacion: {
             tipo_habitacion_id: row.tipo_habitacion_id,
             nombre_tipo: row.nombre_tipo,
             descripcion: row.descripcion,
             capacidad_maxima: row.capacidad_maxima,
-            precio_base_noche: row.precio_base_noche
+            precio_base_noche: row.precio_base_noche,
+            camas: camasDelTipo,
+            cama_principal: camaPrincipal,
+            capacidad_total_camas: capacidadTotalCamas,
+            resumen_camas: camasDelTipo.map(cama =>
+              `${cama.cantidad} ${cama.nombre_tipo_cama}${cama.cantidad > 1 ? 's' : ''}`
+            ).join(', ')
           },
           imagen_id: null,
           nombre_archivo: null,
@@ -382,7 +517,6 @@ export const getAllHabitacionComodidades = async (req, res) => {
         };
       }
 
-      // Agregar imagen si existe
       if (row.imagen_id) {
         const imagen = {
           imagen_id: row.imagen_id,
@@ -394,7 +528,6 @@ export const getAllHabitacionComodidades = async (req, res) => {
 
         habitacionesMap[row.habitacion_id].imagenes.push(imagen);
 
-        // Seleccionar imagen principal o la primera
         if (row.es_principal === 1 || !habitacionesMap[row.habitacion_id].imagen_id) {
           habitacionesMap[row.habitacion_id].imagen_id = row.imagen_id;
           habitacionesMap[row.habitacion_id].nombre_archivo = row.nombre_archivo;
@@ -404,17 +537,36 @@ export const getAllHabitacionComodidades = async (req, res) => {
       }
     });
 
-    // Convertir a array y agregar comodidades
-    const processedData = Object.values(habitacionesMap).map(habitacion => ({
+    // FILTRO ADICIONAL POR COMODIDADES (si se requiere que tenga TODAS las comodidades)
+    let processedData = Object.values(habitacionesMap).map(habitacion => ({
       ...habitacion,
       comodidades: comodidadesPorHabitacion[habitacion.habitacion_id] || []
     }));
 
+    // Si se especificaron comodidades, filtrar habitaciones que tengan TODAS las comodidades
+    if (comodidades) {
+      const comodidadesRequeridas = comodidades.split(',').map(c => c.trim());
+      processedData = processedData.filter(habitacion => {
+        const comodidadesHabitacion = habitacion.comodidades.map(c => c.nombre_comodidad);
+        return comodidadesRequeridas.every(comodidadRequerida =>
+          comodidadesHabitacion.includes(comodidadRequerida)
+        );
+      });
+    }
+
     res.status(200).json({
       success: true,
-      message: 'Información de habitaciones con comodidades e iconos obtenida exitosamente',
+      message: `Se encontraron ${processedData.length} habitaciones que cumplen con los filtros`,
       data: processedData,
-      total: processedData.length
+      total: processedData.length,
+      filtros_aplicados: {
+        capacidad: capacidad ? parseInt(capacidad) : null,
+        tipo_cama: tipo_cama || null,
+        vista: vista || null,
+        precio_min: precio_min ? parseFloat(precio_min) : null,
+        precio_max: precio_max ? parseFloat(precio_max) : null,
+        comodidades: comodidades ? comodidades.split(',').map(c => c.trim()) : null
+      }
     });
 
   } catch (error) {
@@ -426,8 +578,6 @@ export const getAllHabitacionComodidades = async (req, res) => {
     });
   }
 };
-
-
 
 // GET - Obtener información completa de una habitación específica con comodidades e imágenes
 export const getHabitacion = async (req, res) => {
