@@ -33,7 +33,7 @@ export const login = async (req, res) => {
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: "Correo electrónico inválido",
+        message: "Credenciales inválidas",
       })
     }
     console.log(email, password, user.password_hash)
@@ -45,7 +45,7 @@ export const login = async (req, res) => {
     if (!isMatch) {
       return res.status(401).json({
         success: false,
-        message: "Contraseña inválida",
+        message: "Credenciales inválidas",
       })
     }
 
