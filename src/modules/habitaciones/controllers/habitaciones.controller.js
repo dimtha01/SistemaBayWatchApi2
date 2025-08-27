@@ -278,14 +278,16 @@ import pool from "../../../config/db.js";
 // };
 export const getAllHabitacionComodidades = async (req, res) => {
   try {
-    // Primera consulta para obtener las habitaciones básicas
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+
+    // Consulta actualizada - solo necesitamos el nombre de la vista
     const habitacionesQuery = `
       SELECT 
         h.habitacion_id,
         h.numero_habitacion,
         h.estado,
         h.piso,
-        h.vista,
+        vh.nombre_vista as vista,
         th.tipo_habitacion_id,
         th.nombre_tipo,
         th.descripcion,
@@ -294,15 +296,18 @@ export const getAllHabitacionComodidades = async (req, res) => {
         img.imagen_id,
         img.nombre_archivo,
         img.ruta_archivo,
+        img.es_principal,
         img.orden_visualizacion
       FROM habitaciones h
       LEFT JOIN tipos_habitacion th ON h.tipo_habitacion_id = th.tipo_habitacion_id
-      LEFT JOIN imagenes_habitacion img ON h.habitacion_id = img.habitacion_id 
-        AND (img.es_principal = 1 OR img.orden_visualizacion = 1)
-      ORDER BY h.piso, h.numero_habitacion
+      LEFT JOIN vistas_habitacion vh ON h.vista_id = vh.vista_id
+      LEFT JOIN imagenes_habitacion img ON h.habitacion_id = img.habitacion_id
+      ORDER BY h.piso, h.numero_habitacion, img.orden_visualizacion
     `;
 
-    // Segunda consulta para obtener todas las comodidades por habitación CON iconos
+    const [habitacionesRows] = await pool.execute(habitacionesQuery);
+
+    // Segunda consulta para comodidades (sin cambios)
     const comodidadesQuery = `
       SELECT 
         hc.habitacion_id,
@@ -325,16 +330,14 @@ export const getAllHabitacionComodidades = async (req, res) => {
       ORDER BY hc.habitacion_id, ch.categoria_comodidad, ch.nombre_comodidad
     `;
 
-    const [habitacionesRows] = await pool.execute(habitacionesQuery);
     const [comodidadesRows] = await pool.execute(comodidadesQuery);
 
-    // Crear un mapa de comodidades agrupadas por habitacion_id
+    // Crear mapa de comodidades
     const comodidadesPorHabitacion = {};
     comodidadesRows.forEach(comodidad => {
       if (!comodidadesPorHabitacion[comodidad.habitacion_id]) {
         comodidadesPorHabitacion[comodidad.habitacion_id] = [];
       }
-
       comodidadesPorHabitacion[comodidad.habitacion_id].push({
         comodidad_id: comodidad.comodidad_id,
         nombre_comodidad: comodidad.nombre_comodidad,
@@ -353,8 +356,56 @@ export const getAllHabitacionComodidades = async (req, res) => {
       });
     });
 
-    // Combinar habitaciones con sus comodidades
-    const processedData = habitacionesRows.map(habitacion => ({
+    // Agrupar habitaciones
+    const habitacionesMap = {};
+
+    habitacionesRows.forEach(row => {
+      if (!habitacionesMap[row.habitacion_id]) {
+        habitacionesMap[row.habitacion_id] = {
+          habitacion_id: row.habitacion_id,
+          numero_habitacion: row.numero_habitacion,
+          estado: row.estado,
+          piso: row.piso,
+          vista: row.vista, // Solo el nombre de la vista
+          tipo_habitacion: {
+            tipo_habitacion_id: row.tipo_habitacion_id,
+            nombre_tipo: row.nombre_tipo,
+            descripcion: row.descripcion,
+            capacidad_maxima: row.capacidad_maxima,
+            precio_base_noche: row.precio_base_noche
+          },
+          imagen_id: null,
+          nombre_archivo: null,
+          ruta_archivo: null,
+          orden_visualizacion: null,
+          imagenes: []
+        };
+      }
+
+      // Agregar imagen si existe
+      if (row.imagen_id) {
+        const imagen = {
+          imagen_id: row.imagen_id,
+          nombre_archivo: row.nombre_archivo,
+          ruta_archivo: row.ruta_archivo ? `${baseUrl}${row.ruta_archivo}` : null,
+          es_principal: row.es_principal,
+          orden_visualizacion: row.orden_visualizacion
+        };
+
+        habitacionesMap[row.habitacion_id].imagenes.push(imagen);
+
+        // Seleccionar imagen principal o la primera
+        if (row.es_principal === 1 || !habitacionesMap[row.habitacion_id].imagen_id) {
+          habitacionesMap[row.habitacion_id].imagen_id = row.imagen_id;
+          habitacionesMap[row.habitacion_id].nombre_archivo = row.nombre_archivo;
+          habitacionesMap[row.habitacion_id].ruta_archivo = row.ruta_archivo ? `${baseUrl}${row.ruta_archivo}` : null;
+          habitacionesMap[row.habitacion_id].orden_visualizacion = row.orden_visualizacion;
+        }
+      }
+    });
+
+    // Convertir a array y agregar comodidades
+    const processedData = Object.values(habitacionesMap).map(habitacion => ({
       ...habitacion,
       comodidades: comodidadesPorHabitacion[habitacion.habitacion_id] || []
     }));
@@ -375,6 +426,9 @@ export const getAllHabitacionComodidades = async (req, res) => {
     });
   }
 };
+
+
+
 // GET - Obtener información completa de una habitación específica con comodidades e imágenes
 export const getHabitacion = async (req, res) => {
   try {
