@@ -1,8 +1,9 @@
 import { Router } from "express";
-import { getAllHabitacionComodidades } from "../controllers/habitaciones.controller.js";
+import { getAllHabitaciones, getHabitacionById } from "../controllers/habitaciones.controller.js";
 
 const router = Router()
 
-router.get("/", getAllHabitacionComodidades);
+router.get("/", getAllHabitaciones);
+router.get("/:id", getHabitacionById);
 
 export default router;

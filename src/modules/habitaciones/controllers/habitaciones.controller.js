@@ -276,7 +276,7 @@ import pool from "../../../config/db.js";
 //     });
 //   }
 // };
-export const getAllHabitacionComodidades = async (req, res) => {
+export const getAllHabitaciones = async (req, res) => {
   try {
     const baseUrl = `${req.protocol}://${req.get('host')}`;
 
@@ -326,12 +326,12 @@ export const getAllHabitacionComodidades = async (req, res) => {
       SELECT 
         h.habitacion_id,
         h.numero_habitacion,
+        h.descripcion,
         h.estado,
         h.piso,
         vh.nombre_vista as vista,
         th.tipo_habitacion_id,
         th.nombre_tipo,
-        th.descripcion,
         th.capacidad_maxima,
         th.precio_base_noche,
         img.imagen_id,
@@ -580,132 +580,268 @@ export const getAllHabitacionComodidades = async (req, res) => {
 };
 
 // GET - Obtener información completa de una habitación específica con comodidades e imágenes
-export const getHabitacion = async (req, res) => {
+export const getHabitacionById = async (req, res) => {
   try {
-    const { habitacionId } = req.params;
+    const { id } = req.params;
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
 
-    const query = `
-      SELECT 
-        hc.habitacion_id,
-        hc.comodidad_id,
-        hc.fecha_instalacion,
-        hc.notas,
-        -- Información de la habitación
-        h.numero_habitacion,
-        h.estado as estado_habitacion,
-        -- Información del tipo de habitación
-        th.tipo_habitacion_id,
-        th.nombre_tipo,
-        th.descripcion as descripcion_tipo,
-        th.capacidad_maxima,
-        th.precio_base_noche,
-        -- Información de la comodidad
-        ch.nombre_comodidad,
-        ch.descripcion as descripcion_comodidad,
-        ch.categoria_comodidad,
-        ch.estado as estado_comodidad,
-        -- Información del icono
-        ic.id_icon,
-        ic.icon,
-        ic.text as icon_text,
-        ic.descripcion as icon_descripcion
-      FROM habitacion_comodidad hc
-      INNER JOIN habitaciones h ON hc.habitacion_id = h.habitacion_id
-      LEFT JOIN tipos_habitacion th ON h.tipo_habitacion_id = th.tipo_habitacion_id
-      INNER JOIN comodidades_habitacion ch ON hc.comodidad_id = ch.comodidad_id
-      LEFT JOIN iconos_comodidades ic ON ch.id_icon = ic.id_icon
-      WHERE hc.habitacion_id = ?
-      ORDER BY ch.categoria_comodidad, ch.nombre_comodidad
-    `;
-
-    // Query para obtener todas las imágenes de la habitación
-    const imagenesQuery = `
-      SELECT 
-        imagen_id,
-        nombre_archivo,
-        ruta_archivo,
-        es_principal,
-        orden_visualizacion,
-        fecha_subida
-      FROM imagenes_habitacion 
-      WHERE habitacion_id = ?
-      ORDER BY es_principal DESC, orden_visualizacion ASC
-    `;
-
-    const [rows] = await pool.execute(query, [habitacionId]);
-    const [imagenes] = await pool.execute(imagenesQuery, [habitacionId]);
-
-    if (rows.length === 0) {
-      return res.status(404).json({
+    // Validar que el ID sea un número
+    if (!id || isNaN(parseInt(id))) {
+      return res.status(400).json({
         success: false,
-        message: `No se encontraron comodidades para la habitación ${habitacionId}`
+        message: 'ID de habitación inválido'
       });
     }
 
-    // Agrupar por categorías
-    const comodidadesPorCategoria = rows.reduce((acc, row) => {
-      const categoria = row.categoria_comodidad;
-      if (!acc[categoria]) {
-        acc[categoria] = [];
-      }
-      acc[categoria].push({
-        comodidad_id: row.comodidad_id,
-        nombre_comodidad: row.nombre_comodidad,
-        descripcion_comodidad: row.descripcion_comodidad,
-        fecha_instalacion: row.fecha_instalacion,
-        notas: row.notas,
-        estado_comodidad: row.estado_comodidad,
-        icono: {
-          id_icon: row.id_icon,
-          icon: row.icon,
-          text: row.icon_text,
-          descripcion: row.icon_descripcion
-        }
+    const habitacionId = parseInt(id);
+
+    // CONSULTA PRINCIPAL DE LA HABITACIÓN
+    const habitacionQuery = `
+      SELECT 
+        h.habitacion_id,
+        h.numero_habitacion,
+        h.descripcion,
+        h.estado,
+        h.piso,
+        h.calificacion_promedio,
+        h.total_resenas,
+        h.fecha_ultima_resena,
+        vh.nombre_vista as vista,
+        th.tipo_habitacion_id,
+        th.nombre_tipo,
+        th.capacidad_maxima,
+        th.precio_base_noche,
+        img.imagen_id,
+        img.nombre_archivo,
+        img.ruta_archivo,
+        img.es_principal,
+        img.orden_visualizacion
+      FROM habitaciones h
+      LEFT JOIN tipos_habitacion th ON h.tipo_habitacion_id = th.tipo_habitacion_id
+      LEFT JOIN vistas_habitacion vh ON h.vista_id = vh.vista_id
+      LEFT JOIN imagenes_habitacion img ON h.habitacion_id = img.habitacion_id
+      WHERE h.habitacion_id = ?
+      ORDER BY img.orden_visualizacion
+    `;
+
+    const [habitacionRows] = await pool.execute(habitacionQuery, [habitacionId]);
+
+    if (habitacionRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Habitación no encontrada'
       });
-      return acc;
-    }, {});
+    }
+
+    // CONSULTA DE FECHAS DE RESERVA
+    const fechasReservaQuery = `
+      SELECT 
+        fecha_entrada,
+        fecha_salida
+      FROM reserva_habitacion
+      WHERE habitacion_id = ?
+      ORDER BY fecha_entrada DESC
+    `;
+
+    const [fechasReservaRows] = await pool.execute(fechasReservaQuery, [habitacionId]);
+
+    // CONSULTA DE COMODIDADES
+    const comodidadesQuery = `
+      SELECT 
+        hc.habitacion_id,
+        ch.comodidad_id,
+        ch.nombre_comodidad,
+        ch.descripcion,
+        ch.categoria_comodidad,
+        ch.id_icon,
+        ch.estado,
+        hc.fecha_instalacion,
+        hc.notas,
+        ic.icon,
+        ic.text as icon_text,
+        ic.descripcion as icon_descripcion,
+        ic.estado as icon_estado
+      FROM habitacion_comodidad hc
+      INNER JOIN comodidades_habitacion ch ON hc.comodidad_id = ch.comodidad_id
+      LEFT JOIN iconos_comodidades ic ON ch.id_icon = ic.id_icon
+      WHERE ch.estado = 'Activo' AND hc.habitacion_id = ?
+      ORDER BY ch.categoria_comodidad, ch.nombre_comodidad
+    `;
+
+    const [comodidadesRows] = await pool.execute(comodidadesQuery, [habitacionId]);
+
+    // CONSULTA DE CAMAS
+    const tipoHabitacionId = habitacionRows[0].tipo_habitacion_id;
+    const camasQuery = `
+      SELECT 
+        thc.tipo_habitacion_id,
+        tc.tipo_cama_id,
+        tc.nombre_tipo_cama,
+        tc.descripcion as descripcion_cama,
+        tc.capacidad_personas,
+        tc.dimensiones,
+        tc.estado as estado_cama,
+        thc.cantidad,
+        thc.es_principal
+      FROM tipo_habitacion_camas thc
+      INNER JOIN tipos_cama tc ON thc.tipo_cama_id = tc.tipo_cama_id
+      WHERE tc.estado = 'Activo' AND thc.tipo_habitacion_id = ?
+      ORDER BY thc.es_principal DESC, tc.nombre_tipo_cama
+    `;
+
+    const [camasRows] = await pool.execute(camasQuery, [tipoHabitacionId]);
+
+    // CONSULTA DE RESEÑAS CON INFORMACIÓN DEL USUARIO
+    const resenasQuery = `
+      SELECT 
+        r.resena_id,
+        r.habitacion_id,
+        r.usuario_id,
+        r.calificacion,
+        r.comentario,
+        r.fecha_creacion,
+        CASE 
+          WHEN r.nombre_huesped IS NOT NULL THEN r.nombre_huesped
+          WHEN u.huesped_id IS NOT NULL THEN h.nombre
+          WHEN u.personal_id IS NOT NULL THEN p.nombre
+          ELSE 'Huésped Anónimo'
+        END AS nombre_mostrar,
+        CASE 
+          WHEN u.huesped_id IS NOT NULL THEN 'huesped'
+          WHEN u.personal_id IS NOT NULL THEN 'personal'
+          ELSE 'anonimo'
+        END AS tipo_usuario
+      FROM resenas_habitacion r
+      LEFT JOIN usuarios u ON r.usuario_id = u.usuario_id
+      LEFT JOIN huespedes h ON u.huesped_id = h.huesped_id
+      LEFT JOIN personal p ON u.personal_id = p.personal_id
+      WHERE r.habitacion_id = ?
+      ORDER BY r.fecha_creacion DESC
+    `;
+
+    const [resenasRows] = await pool.execute(resenasQuery, [habitacionId]);
+
+    // PROCESAR DATOS DE LA HABITACIÓN
+    const primeraFila = habitacionRows[0];
+
+    // Procesar fechas de reserva (solo fechas)
+    const fechasReserva = fechasReservaRows.map(reserva => ({
+      fecha_entrada: reserva.fecha_entrada,
+      fecha_salida: reserva.fecha_salida
+    }));
+
+    // Procesar camas
+    const camas = camasRows.map(cama => ({
+      tipo_cama_id: cama.tipo_cama_id,
+      nombre_tipo_cama: cama.nombre_tipo_cama,
+      descripcion: cama.descripcion_cama,
+      capacidad_personas: cama.capacidad_personas,
+      dimensiones: cama.dimensiones,
+      estado: cama.estado_cama,
+      cantidad: cama.cantidad,
+      es_principal: cama.es_principal,
+      capacidad_total: cama.capacidad_personas * cama.cantidad
+    }));
+
+    const capacidadTotalCamas = camas.reduce((total, cama) => total + cama.capacidad_total, 0);
+    const camaPrincipal = camas.find(cama => cama.es_principal === 1) || camas[0] || null;
+
+    // Procesar comodidades
+    const comodidades = comodidadesRows.map(comodidad => ({
+      comodidad_id: comodidad.comodidad_id,
+      nombre_comodidad: comodidad.nombre_comodidad,
+      descripcion: comodidad.descripcion,
+      categoria_comodidad: comodidad.categoria_comodidad,
+      estado: comodidad.estado,
+      fecha_instalacion: comodidad.fecha_instalacion,
+      notas: comodidad.notas,
+      icono: {
+        id_icon: comodidad.id_icon,
+        icon: comodidad.icon,
+        text: comodidad.icon_text,
+        descripcion: comodidad.icon_descripcion,
+        estado: comodidad.icon_estado
+      }
+    }));
+
+    // Procesar imágenes
+    const imagenes = [];
+    let imagenPrincipal = null;
+
+    habitacionRows.forEach(row => {
+      if (row.imagen_id) {
+        const imagen = {
+          imagen_id: row.imagen_id,
+          nombre_archivo: row.nombre_archivo,
+          ruta_archivo: row.ruta_archivo ? `${baseUrl}${row.ruta_archivo}` : null,
+          es_principal: row.es_principal,
+          orden_visualizacion: row.orden_visualizacion
+        };
+
+        imagenes.push(imagen);
+
+        if (row.es_principal === 1 || !imagenPrincipal) {
+          imagenPrincipal = imagen;
+        }
+      }
+    });
+
+    // Procesar reseñas
+    const resenas = resenasRows.map(resena => ({
+      resena_id: resena.resena_id,
+      usuario_id: resena.usuario_id,
+      nombre_mostrar: resena.nombre_mostrar,
+      tipo_usuario: resena.tipo_usuario,
+      calificacion: parseFloat(resena.calificacion),
+      comentario: resena.comentario,
+      fecha_creacion: resena.fecha_creacion,
+      fecha_relativa: getRelativeTime(resena.fecha_creacion)
+    }));
+
+    // Estadísticas de reseñas
+    const estadisticasResenas = {
+      total_resenas: parseInt(primeraFila.total_resenas) || 0,
+      calificacion_promedio: parseFloat(primeraFila.calificacion_promedio) || 0,
+      fecha_ultima_resena: primeraFila.fecha_ultima_resena,
+      distribucion_calificaciones: getDistribucionCalificaciones(resenasRows)
+    };
+
+    // CONSTRUIR RESPUESTA FINAL
+    const habitacion = {
+      habitacion_id: primeraFila.habitacion_id,
+      numero_habitacion: primeraFila.numero_habitacion,
+      estado: primeraFila.estado,
+      piso: primeraFila.piso,
+      vista: primeraFila.vista,
+      tipo_habitacion: {
+        tipo_habitacion_id: primeraFila.tipo_habitacion_id,
+        nombre_tipo: primeraFila.nombre_tipo,
+        descripcion: primeraFila.descripcion,
+        capacidad_maxima: primeraFila.capacidad_maxima,
+        precio_base_noche: primeraFila.precio_base_noche,
+        camas: camas,
+        cama_principal: camaPrincipal,
+        capacidad_total_camas: capacidadTotalCamas,
+        resumen_camas: camas.map(cama =>
+          `${cama.cantidad} ${cama.nombre_tipo_cama}${cama.cantidad > 1 ? 's' : ''}`
+        ).join(', ')
+      },
+      imagen_principal: imagenPrincipal,
+      imagenes: imagenes,
+      comodidades: comodidades,
+      fechas_reserva: fechasReserva,
+      resenas: resenas,
+      estadisticas_resenas: estadisticasResenas
+    };
 
     res.status(200).json({
       success: true,
-      message: `Información completa de la habitación ${habitacionId} obtenida exitosamente`,
-      habitacion: {
-        habitacion_id: rows[0].habitacion_id,
-        numero_habitacion: rows[0].numero_habitacion,
-        estado_habitacion: rows[0].estado_habitacion,
-        tipo_habitacion: {
-          tipo_habitacion_id: rows[0].tipo_habitacion_id,
-          nombre_tipo: rows[0].nombre_tipo,
-          descripcion: rows[0].descripcion_tipo,
-          capacidad_maxima: rows[0].capacidad_maxima,
-          precio_base_noche: rows[0].precio_base_noche
-        },
-        imagenes: {
-          total_imagenes: imagenes.length,
-          imagen_principal: imagenes.find(img => img.es_principal === 1) || null,
-          todas_imagenes: imagenes
-        }
-      },
-      total_comodidades: rows.length,
-      comodidades_por_categoria: comodidadesPorCategoria,
-      comodidades_detalle: rows.map(row => ({
-        comodidad_id: row.comodidad_id,
-        nombre_comodidad: row.nombre_comodidad,
-        descripcion_comodidad: row.descripcion_comodidad,
-        categoria_comodidad: row.categoria_comodidad,
-        fecha_instalacion: row.fecha_instalacion,
-        notas: row.notas,
-        estado_comodidad: row.estado_comodidad,
-        icono: {
-          id_icon: row.id_icon,
-          icon: row.icon,
-          text: row.icon_text,
-          descripcion: row.icon_descripcion
-        }
-      }))
+      message: 'Habitación encontrada exitosamente',
+      data: habitacion
     });
 
   } catch (error) {
-    console.error('Error al obtener información de la habitación:', error);
+    console.error('Error al obtener habitación por ID:', error);
     res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
@@ -713,6 +849,36 @@ export const getHabitacion = async (req, res) => {
     });
   }
 };
+
+
+
+// FUNCIONES AUXILIARES
+function getRelativeTime(fecha) {
+  const now = new Date();
+  const fechaResena = new Date(fecha);
+  const diffTime = Math.abs(now - fechaResena);
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+  if (diffDays === 1) return 'Hace 1 día';
+  if (diffDays < 7) return `Hace ${diffDays} días`;
+  if (diffDays < 30) return `Hace ${Math.floor(diffDays / 7)} semana${Math.floor(diffDays / 7) > 1 ? 's' : ''}`;
+  if (diffDays < 365) return `Hace ${Math.floor(diffDays / 30)} mes${Math.floor(diffDays / 30) > 1 ? 'es' : ''}`;
+  return `Hace ${Math.floor(diffDays / 365)} año${Math.floor(diffDays / 365) > 1 ? 's' : ''}`;
+}
+
+function getDistribucionCalificaciones(resenasRows) {
+  const distribucion = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+
+  resenasRows.forEach(resena => {
+    const calificacion = Math.floor(parseFloat(resena.calificacion));
+    if (distribucion.hasOwnProperty(calificacion)) {
+      distribucion[calificacion]++;
+    }
+  });
+
+  return distribucion;
+}
+
 
 // GET - Obtener habitaciones que tienen una comodidad específica con imágenes
 export const getHabitacionesByComodidad = async (req, res) => {
