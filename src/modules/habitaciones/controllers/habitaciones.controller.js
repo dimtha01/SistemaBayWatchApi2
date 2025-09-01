@@ -1,7 +1,7 @@
 // controllers/habitacionComodidadController.js
 
 import pool from "../../../config/db.js";
-import { getRelativeTime } from "../utils/index.js";
+import { getDistribucionCalificaciones, getRelativeTime } from "../utils/index.js";
 
 // GET - Obtener todas las relaciones habitación-comodidad con información completa
 // export const getAllHabitacionComodidades = async (req, res) => {

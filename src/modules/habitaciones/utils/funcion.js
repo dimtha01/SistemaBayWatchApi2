@@ -10,3 +10,16 @@ export const getRelativeTime = (fecha) => {
   if (diffDays < 365) return `Hace ${Math.floor(diffDays / 30)} mes${Math.floor(diffDays / 30) > 1 ? 'es' : ''}`;
   return `Hace ${Math.floor(diffDays / 365)} año${Math.floor(diffDays / 365) > 1 ? 's' : ''}`;
 }
+
+export const getDistribucionCalificaciones = (resenasRows) => {
+  const distribucion = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+
+  resenasRows.forEach(resena => {
+    const calificacion = Math.floor(parseFloat(resena.calificacion));
+    if (distribucion.hasOwnProperty(calificacion)) {
+      distribucion[calificacion]++;
+    }
+  });
+
+  return distribucion;
+}
